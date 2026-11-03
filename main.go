@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -68,10 +67,13 @@ func (b *Backend) IsAlive() (alive bool) {
 
 type ServerPool struct {
 	backends []*Backend
-	current  uint64
+	mu       sync.Mutex
 }
 
 func (s *ServerPool) AddBackend(backend *Backend) {
+	if backend.Weight <= 0{
+		backend.Weight=1
+	}
 	s.backends = append(s.backends, backend)
 }
 
@@ -84,23 +86,44 @@ func (s *ServerPool) MarkBackendStatus(backendUrl *url.URL, alive bool) {
 	}
 }
 
-func (s *ServerPool) NextIndex() int {
-	return int(atomic.AddUint64(&s.current, uint64(1)) % uint64(len(s.backends)))
-}
-
 func (s *ServerPool) GetNextPeer() *Backend {
-	next := s.NextIndex()
-	l := len(s.backends) + next
-	for i := next; i < l; i++ {
-		idx := i % len(s.backends)
-		if s.backends[idx].IsAlive() {
-			if i != next {
-				atomic.StoreUint64(&s.current, uint64(idx))
-			}
-			return s.backends[idx]
+	// Old round-robin selection (kept for reference):
+	// next := s.NextIndex()
+	// l := len(s.backends) + next
+	// for i := next; i < l; i++ {
+	// 	idx := i % len(s.backends)
+	// 	if s.backends[idx].IsAlive() {
+	// 		if i != next {
+	// 			atomic.StoreUint64(&s.current, uint64(idx))
+	// 		}
+	// 		return s.backends[idx]
+	// 	}
+	// }
+	// return nil
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var selected *Backend
+	total := 0
+
+	for _, b := range s.backends {
+		if !b.IsAlive() {
+			continue
+		}
+		b.CurrentWeight += b.Weight
+		total += b.Weight
+
+		if selected == nil || b.CurrentWeight > selected.CurrentWeight {
+			selected = b
 		}
 	}
-	return nil
+
+	if selected == nil {
+		return nil
+	}
+	selected.CurrentWeight -= total
+	return selected
 }
 
 func (s *ServerPool) HealthCheck() {

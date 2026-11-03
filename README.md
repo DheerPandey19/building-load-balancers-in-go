@@ -1,12 +1,13 @@
 # Building Load Balancers in Go
 
-A simple HTTP reverse-proxy load balancer written in Go while following [Kasun Vithanage's tutorial](https://kasvith.me/posts/lets-create-a-simple-lb-go/).
+A simple HTTP reverse-proxy load balancer written in Go 
 
-It distributes incoming requests across a list of backends using **round robin**, retries failed proxies, and runs **TCP health checks** so traffic only goes to servers that are up.
+It distributes incoming requests across backends by weight, retries failed proxies, and runs **TCP health checks** so traffic only goes to servers that are up.
 
 ## Features
 
-- Round-robin backend selection
+- Smooth weighted round-robin selection
+- Optional per-backend weights via `url|weight`
 - Skip unhealthy backends
 - Retry the same backend a few times, then try another
 - Mark backends down on proxy errors
@@ -19,13 +20,23 @@ It distributes incoming requests across a list of backends using **round robin**
 
 ## Run
 
+Equal weights (omit `|weight`, default is `1`):
+
 ```bash
 go run . -backends=http://127.0.0.1:8081,http://127.0.0.1:8082 -port=3030
 ```
 
+Weighted (8081 gets 3x the traffic of 8082):
+
+```bash
+go run . -backends="http://127.0.0.1:8081|3,http://127.0.0.1:8082|1" -port=3030
+```
+
+**PowerShell note:** `|` is the pipe operator in PowerShell. Always quote the `-backends` value when using weights, as shown above.
+
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-backends` | Comma-separated backend URLs (required) | none |
+| `-backends` | Comma-separated `url` or `url|weight` (required) | none |
 | `-port` | Port the load balancer listens on | `3030` |
 
 ## Try it locally
@@ -37,10 +48,10 @@ python -m http.server 8081
 python -m http.server 8082
 ```
 
-2. Start the load balancer:
+2. Start the load balancer with weights:
 
 ```bash
-go run . -backends=http://127.0.0.1:8081,http://127.0.0.1:8082 -port=3030
+go run . -backends="http://127.0.0.1:8081|3,http://127.0.0.1:8082|1" -port=3030
 ```
 
 3. Send requests:
@@ -61,17 +72,15 @@ go test ./...
 
 | File | Purpose |
 |------|---------|
-| `main.go` | Load balancer, peer selection, health checks, CLI |
+| `main.go` | Load balancer, weighted peer selection, health checks, CLI |
 | `main_test.go` | Round-robin and dead-backend tests |
 | `go.mod` | Module definition |
 
 ## How it works
 
-1. Parse backend URLs and create a `ReverseProxy` per backend.
-2. On each request, pick the next alive peer with an atomic counter.
+1. Parse backend URLs (and optional weights) and create a `ReverseProxy` per backend.
+2. On each request, pick a peer with smooth weighted round robin: raise each alive backend's current weight by its weight, choose the highest, then subtract the total.
 3. On proxy errors, retry, then mark the backend down and try another peer.
 4. A background goroutine dials each backend over TCP and updates `Alive`.
 
-## Credits
-
-Based on [Let's Create a Simple Load Balancer With Go](https://kasvith.me/posts/lets-create-a-simple-lb-go/) and [kasvith/simplelb](https://github.com/kasvith/simplelb).
+Weighted selection follows the nginx smooth weighted round-robin approach.
